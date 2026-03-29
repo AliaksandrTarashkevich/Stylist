@@ -1,65 +1,293 @@
-import Image from "next/image";
+"use client";
 
-export default function Home() {
+import { useState, useEffect, useCallback } from "react";
+import { Wand2, Heart, Bookmark, Shirt } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { cn } from "@/lib/utils";
+import { ReferencePhotoUpload } from "@/components/builder/ReferencePhotoUpload";
+import { SlotPanel } from "@/components/builder/SlotPanel";
+import { TryOnResult } from "@/components/builder/TryOnResult";
+import { toast } from "sonner";
+
+interface ReferencePhoto {
+  id: string;
+  path: string;
+}
+
+interface ClothingItem {
+  id: string;
+  name: string;
+  imageFile: string;
+  slot: string;
+  storeName?: string | null;
+  price?: string | null;
+}
+
+interface TryOnResultData {
+  id: string;
+  resultImage: string;
+  fromCache: boolean;
+  durationMs: number | null;
+  outfitId?: string;
+  liked?: boolean | null;
+}
+
+const SLOTS = [
+  { key: "top", label: "Top" },
+  { key: "bottom", label: "Bottom" },
+  { key: "shoes", label: "Shoes" },
+  { key: "outerwear", label: "Outerwear" },
+  { key: "dress", label: "Dress" },
+] as const;
+
+export default function BuilderPage() {
+  const [referencePhoto, setReferencePhoto] = useState<ReferencePhoto | null>(null);
+  const [clothingBySlot, setClothingBySlot] = useState<Record<string, ClothingItem[]>>({});
+  const [selectedBySlot, setSelectedBySlot] = useState<Record<string, string | null>>({});
+  const [result, setResult] = useState<TryOnResultData | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [removeOuterwear, setRemoveOuterwear] = useState(false);
+  const [outfitLoaded, setOutfitLoaded] = useState(false);
+
+  // Read outfit param from URL without useSearchParams (avoids Suspense)
+  const [outfitParam, setOutfitParam] = useState<string | null>(null);
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    setOutfitParam(params.get("outfit"));
+  }, []);
+
+  useEffect(() => {
+    fetch("/api/reference")
+      .then((r) => r.json())
+      .then((data) => {
+        if (data?.id) setReferencePhoto(data);
+      });
+  }, []);
+
+  const loadClothing = useCallback(async () => {
+    const res = await fetch("/api/clothing");
+    const items: ClothingItem[] = await res.json();
+    const bySlot: Record<string, ClothingItem[]> = {};
+    for (const item of items) {
+      if (!bySlot[item.slot]) bySlot[item.slot] = [];
+      bySlot[item.slot].push(item);
+    }
+    setClothingBySlot(bySlot);
+    return items;
+  }, []);
+
+  useEffect(() => {
+    loadClothing();
+  }, [loadClothing]);
+
+  // Load outfit from URL param
+  useEffect(() => {
+    if (!outfitParam || outfitLoaded) return;
+
+    async function loadOutfit() {
+      try {
+        const res = await fetch(`/api/outfits/${outfitParam}`);
+        if (!res.ok) throw new Error("Outfit not found");
+        const outfit = await res.json();
+
+        // Pre-fill selected slots
+        const selections: Record<string, string | null> = {};
+        for (const item of outfit.items) {
+          selections[item.slot] = item.clothingId;
+        }
+        setSelectedBySlot(selections);
+
+        // Show cached result if exists
+        if (outfit.tryOnResults?.length > 0) {
+          const latest = outfit.tryOnResults[0];
+          setResult({
+            id: latest.id,
+            resultImage: latest.resultImage,
+            fromCache: true,
+            durationMs: latest.durationMs,
+            outfitId: outfit.id,
+            liked: latest.liked,
+          });
+        }
+
+        toast.info(`Loaded outfit: ${outfit.name || "Untitled"}`);
+        setOutfitLoaded(true);
+      } catch {
+        toast.error("Failed to load outfit");
+      }
+    }
+
+    loadOutfit();
+  }, [outfitParam, outfitLoaded]);
+
+  const handleSelect = useCallback((slot: string, id: string | null) => {
+    setSelectedBySlot((prev) => ({ ...prev, [slot]: id }));
+  }, []);
+
+  const handleTryOn = useCallback(async () => {
+    const selectedIds = Object.values(selectedBySlot).filter((id): id is string => id != null);
+    if (selectedIds.length === 0) {
+      toast.error("Select a clothing item first");
+      return;
+    }
+    if (!referencePhoto) {
+      toast.error("Upload your reference photo first");
+      return;
+    }
+
+    setLoading(true);
+    setResult(null);
+    try {
+      const res = await fetch("/api/tryon", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ clothingIds: selectedIds, removeOuterwear }),
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error || "Try-on failed");
+      }
+      const data = await res.json();
+      setResult({
+        id: data.id,
+        resultImage: data.resultImage,
+        fromCache: data.fromCache,
+        durationMs: data.durationMs,
+        outfitId: data.outfitId,
+        liked: data.liked,
+      });
+      if (data.fromCache) {
+        toast.info("Loaded from cache");
+      } else {
+        toast.success("Try-on complete! Outfit saved automatically.");
+      }
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Try-on failed");
+    } finally {
+      setLoading(false);
+    }
+  }, [selectedBySlot, referencePhoto, removeOuterwear]);
+
+  const handleLike = useCallback(async () => {
+    if (!result?.id) return;
+    const newLiked = result.liked === true ? null : true;
+    setResult((prev) => prev ? { ...prev, liked: newLiked } : prev);
+    try {
+      const res = await fetch("/api/tryon", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: result.id, liked: newLiked }),
+      });
+      if (!res.ok) throw new Error();
+    } catch {
+      setResult((prev) => prev ? { ...prev, liked: result.liked } : prev);
+      toast.error("Failed to update");
+    }
+  }, [result]);
+
+  const hasSelection = Object.values(selectedBySlot).some((id) => id != null);
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
+    <div className="p-6 space-y-6">
+      <div>
+        <h1 className="text-2xl font-bold">Outfit Builder</h1>
+        <p className="text-sm text-muted-foreground">
+          Select clothing for each slot and try it on
+        </p>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-[auto_1fr_1fr] gap-8 items-start">
+        <ReferencePhotoUpload
+          photo={referencePhoto}
+          onUpload={setReferencePhoto}
         />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
-        </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
+
+        <div className="space-y-4">
+          <h2 className="text-sm font-medium text-muted-foreground uppercase tracking-wider">
+            Equipment Slots
+          </h2>
+          {SLOTS.map((slot) => (
+            <SlotPanel
+              key={slot.key}
+              slot={slot.key}
+              label={slot.label}
+              items={clothingBySlot[slot.key] || []}
+              selectedId={selectedBySlot[slot.key] || null}
+              onSelect={(id) => handleSelect(slot.key, id)}
+              onItemAdded={(newItemId) => {
+                loadClothing();
+                handleSelect(slot.key, newItemId);
+              }}
             />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
+          ))}
+
+          {/* Remove outerwear toggle */}
+          <button
+            onClick={() => setRemoveOuterwear((v) => !v)}
+            className={cn(
+              "flex items-center gap-2 w-full px-3 py-2 rounded-lg border text-sm transition-colors",
+              removeOuterwear
+                ? "border-primary bg-primary/10 text-primary"
+                : "border-border text-muted-foreground hover:border-primary/50"
+            )}
           >
-            Documentation
-          </a>
+            <Shirt className="w-4 h-4" />
+            Remove outerwear from photo
+            {removeOuterwear && (
+              <Badge variant="default" className="ml-auto text-[10px] px-1.5 py-0">
+                ON
+              </Badge>
+            )}
+          </button>
+
+          <Button
+            onClick={handleTryOn}
+            disabled={loading || !hasSelection || !referencePhoto}
+            className="w-full mt-2"
+            size="lg"
+          >
+            <Wand2 className="w-4 h-4 mr-2" />
+            {loading ? "Generating..." : "Try On"}
+          </Button>
         </div>
-      </main>
+
+        <div className="space-y-2">
+          <h2 className="text-sm font-medium text-muted-foreground uppercase tracking-wider">
+            Result
+          </h2>
+          <TryOnResult
+            resultImage={result?.resultImage || null}
+            loading={loading}
+            fromCache={result?.fromCache || false}
+            durationMs={result?.durationMs || null}
+          />
+
+          {/* Like + Outfit info bar */}
+          {result?.resultImage && !loading && (
+            <div className="flex items-center gap-2">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={handleLike}
+                className={cn(
+                  "gap-1.5",
+                  result.liked === true && "text-red-500"
+                )}
+              >
+                <Heart className={cn("w-4 h-4", result.liked === true && "fill-current")} />
+                {result.liked === true ? "Liked" : "Like"}
+              </Button>
+              {result.outfitId && (
+                <Badge variant="secondary" className="text-[10px] gap-1">
+                  <Bookmark className="w-3 h-3" />
+                  Saved as outfit
+                </Badge>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   );
 }

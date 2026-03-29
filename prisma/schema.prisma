@@ -1,0 +1,92 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model ReferencePhoto {
+  id        String   @id @default(cuid())
+  filename  String
+  path      String
+  createdAt DateTime @default(now())
+  tryOns    TryOnResult[]
+}
+
+model ClothingItem {
+  id          String   @id @default(cuid())
+  name        String
+  imageFile   String   // primary image URL in Supabase Storage
+  sourceUrl   String?  // original store URL (for "Buy" button)
+  storeName   String?  // "H&M", "Zara", "Reserved", etc.
+  price       String?  // stored as string to handle currency
+  currency    String?
+  slot        String   // "top" | "bottom" | "shoes" | "dress" | "outerwear"
+  color       String?
+  liked       Boolean? // true=liked, false=disliked, null=unrated
+  notes       String?
+  fit         String?  // slim, regular, oversized, relaxed, tailored
+  style       String?  // cropped, longline, A-line, straight, flared
+  material    String?  // cotton, denim, silk, wool — freetext
+  brand       String?  // brand name (separate from storeName which is retailer)
+  description String?  // full description from store page
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  images      ClothingImage[]
+  tryOns      TryOnResult[]
+  outfitItems OutfitItem[]
+}
+
+model ClothingImage {
+  id         String       @id @default(cuid())
+  clothingId String
+  imageFile  String       // URL in Supabase Storage
+  isPrimary  Boolean      @default(false)
+  sortOrder  Int          @default(0)
+  clothing   ClothingItem @relation(fields: [clothingId], references: [id], onDelete: Cascade)
+}
+
+model Outfit {
+  id          String   @id @default(cuid())
+  name        String?
+  description String?
+  coverImage  String?       // path to generated preview
+  fingerprint String?       @unique // hash of sorted clothingIds for dedup
+  liked       Boolean?      // true=liked, false=disliked, null=unrated
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  items        OutfitItem[]
+  tryOnResults TryOnResult[]
+}
+
+model OutfitItem {
+  id         String       @id @default(cuid())
+  outfitId   String
+  clothingId String
+  slot       String       // which slot this item fills in the outfit
+  outfit     Outfit       @relation(fields: [outfitId], references: [id], onDelete: Cascade)
+  clothing   ClothingItem @relation(fields: [clothingId], references: [id], onDelete: Cascade)
+
+  @@unique([outfitId, slot])
+}
+
+model TryOnResult {
+  id             String       @id @default(cuid())
+  resultImage    String       // path to generated image in /uploads/results/
+  cacheKey       String       @unique // hash(referencePhotoPath + clothingItemId)
+  referenceId    String
+  clothingId     String
+  outfitId       String?
+  provider       String       // "gemini" | "replicate" | "mock"
+  durationMs     Int?         // generation time in ms
+  liked          Boolean?     // true=liked, false=disliked, null=unrated
+  createdAt      DateTime     @default(now())
+
+  referencePhoto ReferencePhoto @relation(fields: [referenceId], references: [id])
+  clothing       ClothingItem   @relation(fields: [clothingId], references: [id])
+  outfit         Outfit?        @relation(fields: [outfitId], references: [id], onDelete: SetNull)
+}

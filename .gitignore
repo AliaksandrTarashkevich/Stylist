@@ -36,6 +36,28 @@ yarn-error.log*
 # vercel
 .vercel
 
+# local dev db
+dev.db
+
+# claude
+.claude/
+
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+/src/generated/prisma
+
+# prisma
+prisma/dev.db
+prisma/dev.db-journal
+
+# google cloud credentials
+gcp-key.json
+*.json.key
+
+# uploads (user data)
+public/uploads/photos/*
+public/uploads/clothing/*
+public/uploads/results/*
+!public/uploads/**/.gitkeep
